@@ -1,0 +1,22 @@
+# 数据库配置
+database:
+  path: data/price_monitor.db
+
+# 爬虫配置
+spider:
+  request_timeout: 30
+  retry_times: 3
+  retry_delay: 5
+  random_delay_min: 1
+  random_delay_max: 3
+
+# 日志配置
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 支持的电商平台
+platforms:
+  - jd
+  - taobao
+  - tmall
