@@ -1,7 +1,7 @@
 import click
 import sys
 from tabulate import tabulate
-from price_monitor import ProductManager, PriceChangeDetector
+from price_monitor import ProductManager, PriceChangeDetector, TrendAnalyzer, ReportGenerator
 from price_monitor.detector import ChangeType
 
 if sys.platform == 'win32':
@@ -169,6 +169,103 @@ def export_data():
     click.echo(f"✅ 数据已导出到: {output_path}")
     click.echo(f"   包含 {len(products)} 个商品的完整价格历史")
     click.echo(f"   此数据可用于功能B - 自动生成分析报告")
+
+@cli.command()
+@click.option('--days', '-d', default='7,30', help='分析天数，多个用逗号分隔(默认"7,30")')
+@click.option('--output-dir', '-o', default='reports', help='报告输出目录')
+@click.option('--json-source', '-j', default=None, help='JSON数据源路径(默认data/exported_data.json)')
+@click.option('--combined/--no-combined', default=True, help='使用联合数据源模式(同时读取SQLite和JSON)')
+def report(days, output_dir, json_source, combined):
+    """生成价格分析报告(Markdown/Excel/PDF/图表)，支持多时间段对比和双数据源"""
+    # 解析天数列表
+    try:
+        days_list = [int(d.strip()) for d in days.split(',')]
+    except ValueError:
+        days_list = [7, 30]
+    
+    click.echo(f"📊 正在生成价格分析报告({', '.join([f'{d}天' for d in days_list])})...")
+    
+    if combined:
+        click.echo("🔗 使用联合数据源模式(SQLite + JSON)")
+        json_path = json_source or "data/exported_data.json"
+    elif json_source:
+        click.echo(f"📁 仅使用JSON数据源: {json_source}")
+        json_path = json_source
+    else:
+        click.echo("📁 仅使用SQLite数据源")
+        json_path = None
+    
+    generator = ReportGenerator(output_dir=output_dir, json_path=json_path, use_combined=combined)
+    reports = generator.generate_all_reports(days_list=days_list)
+    
+    click.echo("\n✅ 报告生成完成!")
+    click.echo(f"\n📄 Markdown报告: {reports.get('markdown', 'N/A')}")
+    click.echo(f"📊 Excel报告: {reports.get('excel', 'N/A')}")
+    click.echo(f"📑 PDF报告: {reports.get('pdf', 'N/A')}")
+    click.echo(f"📈 趋势图表: {reports.get('charts', 'N/A')}")
+    click.echo(f"📊 对比图表: {reports.get('compare_charts', 'N/A')}")
+    
+    # 显示汇总统计（多时间段）
+    if combined:
+        from price_monitor.analyzer import CombinedTrendAnalyzer
+        analyzer = CombinedTrendAnalyzer(json_path=json_path)
+        click.echo(f"\n📈 监控概览对比 (联合数据源):")
+    else:
+        from price_monitor import TrendAnalyzer
+        analyzer = TrendAnalyzer()
+        click.echo(f"\n📈 监控概览对比:")
+    
+    for d in days_list:
+        summary = analyzer.get_summary_stats(d)
+        click.echo(f"\n   【{d}天周期】")
+        click.echo(f"      监控商品总数: {summary['total_products']}")
+        click.echo(f"      降价商品数: {summary['price_down_count']}")
+        click.echo(f"      涨价商品数: {summary['price_up_count']}")
+        click.echo(f"      达到目标价: {summary['target_reached_count']}")
+        
+        # 显示数据源统计
+        if combined and 'data_sources' in summary:
+            ds = summary['data_sources']
+            click.echo(f"      数据源分布: SQLite仅{ds.get('sqlite_only',0)}, JSON仅{ds.get('json_only',0)}, 双源{ds.get('both',0)}")
+            if ds.get('conflicts', 0) > 0:
+                click.echo(f"      ⚠️ 数据冲突: {ds['conflicts']}个商品")
+
+@cli.command()
+@click.argument('product_id', type=int)
+@click.option('--days', '-d', default=7, help='分析天数(默认7天)')
+def analyze(product_id, days):
+    """分析单个商品的价格趋势"""
+    analyzer = TrendAnalyzer()
+    result = analyzer.analyze_product(product_id, days)
+    
+    if not result:
+        click.echo("❌ 商品不存在或无价格历史")
+        return
+    
+    click.echo(f"\n📦 {result.product_name}")
+    click.echo(f"   平台: {result.platform}")
+    click.echo(f"\n💰 价格统计:")
+    click.echo(f"   当前价格: ¥{result.current_price:.2f}")
+    click.echo(f"   最低价: ¥{result.min_price:.2f}")
+    click.echo(f"   最高价: ¥{result.max_price:.2f}")
+    click.echo(f"   平均价: ¥{result.avg_price:.2f}")
+    
+    click.echo(f"\n📊 趋势分析(最近{days}天):")
+    click.echo(f"   涨跌额: ¥{result.price_change:.2f}")
+    click.echo(f"   涨跌幅: {result.change_percent:+.2f}%")
+    click.echo(f"   波动范围: ¥{result.volatility_range:.2f} ({result.volatility_percent:.2f}%)")
+    
+    trend_icon = "📈" if result.trend_direction == "up" else "📉" if result.trend_direction == "down" else "➡️"
+    trend_text = "上涨" if result.trend_direction == "up" else "下跌" if result.trend_direction == "down" else "稳定"
+    click.echo(f"   趋势方向: {trend_icon} {trend_text}")
+    
+    if result.target_price:
+        click.echo(f"\n🎯 目标价格:")
+        click.echo(f"   目标价: ¥{result.target_price:.2f}")
+        if result.current_price <= result.target_price:
+            click.echo(f"   状态: ✅ 已达标 (低¥{abs(result.target_diff):.2f})")
+        else:
+            click.echo(f"   状态: ⏳ 未达标 (还需降{result.target_diff_percent:.1f}%)")
 
 if __name__ == '__main__':
     cli()
