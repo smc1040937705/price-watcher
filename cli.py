@@ -2,6 +2,7 @@ import click
 import sys
 from tabulate import tabulate
 from price_monitor import ProductManager, PriceChangeDetector
+from price_monitor.analyzer import PriceAnalyzer
 from price_monitor.detector import ChangeType
 
 if sys.platform == 'win32':
@@ -169,6 +170,41 @@ def export_data():
     click.echo(f"✅ 数据已导出到: {output_path}")
     click.echo(f"   包含 {len(products)} 个商品的完整价格历史")
     click.echo(f"   此数据可用于功能B - 自动生成分析报告")
+
+@cli.command()
+@click.option('--json', '-j', 'json_path', default='data/exported_data.json', help='JSON数据源路径')
+@click.option('--format', '-f', 'formats', multiple=True, default=['markdown', 'excel'], 
+              type=click.Choice(['markdown', 'excel', 'pdf']), 
+              help='输出格式 (可多选: markdown, excel, pdf)')
+def generate_report(json_path, formats):
+    """生成价格监控分析报告 (功能B) - 综合7天+30天趋势"""
+    click.echo("📊 正在生成价格监控智能分析报告...")
+    click.echo("   分析维度: 7天短期 + 30天中期趋势对比")
+    
+    analyzer = PriceAnalyzer(json_path=json_path)
+    results = analyzer.generate_full_report(formats=list(formats))
+    
+    click.echo("\n✅ 报告生成完成!")
+    for fmt, path in results.items():
+        if path:
+            click.echo(f"   {fmt.upper()}: {path}")
+    
+    click.echo(f"\n📈 7天/30天价格走势图已保存到 reports/ 目录")
+
+@cli.command()
+@click.argument('product_id', type=int)
+@click.option('--json', '-j', 'json_path', default='data/exported_data.json', help='JSON数据源路径')
+def chart(product_id, json_path):
+    """生成单个商品价格走势图 (7天+30天)"""
+    analyzer = PriceAnalyzer(json_path=json_path)
+    chart_path = analyzer.generate_dual_chart(product_id)
+    
+    if chart_path:
+        click.echo(f"✅ 价格走势图已生成:")
+        click.echo(f"   7天: reports/product_{product_id}_7days.png")
+        click.echo(f"   30天: reports/product_{product_id}_30days.png")
+    else:
+        click.echo("❌ 生成失败: 商品不存在或价格记录不足")
 
 if __name__ == '__main__':
     cli()
