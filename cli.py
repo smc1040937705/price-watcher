@@ -170,5 +170,113 @@ def export_data():
     click.echo(f"   包含 {len(products)} 个商品的完整价格历史")
     click.echo(f"   此数据可用于功能B - 自动生成分析报告")
 
+@cli.command()
+@click.option('--format', '-f', type=click.Choice(['markdown', 'excel', 'pdf', 'all']), 
+              default='all', help='报告格式 (markdown/excel/pdf/all)')
+@click.option('--output', '-o', type=str, default='reports', help='输出目录')
+@click.option('--use-json', is_flag=True, help='使用JSON数据源而非数据库')
+@click.option('--source', '-s', type=click.Choice(['auto', 'database', 'json', 'merge']), 
+              default='auto', help='数据源选择 (auto/database/json/merge)')
+def report(format, output, use_json, source):
+    """生成价格分析报告"""
+    from price_monitor.report import ReportGenerator
+    import os
+    
+    json_path = 'data/exported_data.json' if (use_json or source == 'json' or source == 'merge') else None
+    
+    generator = ReportGenerator(output_dir=output, json_path=json_path)
+    
+    click.echo("📊 正在分析数据...")
+    generator.prepare_data(use_json=use_json, prefer_source=source)
+    
+    source_info = generator.summary.get('data_source_info')
+    if source_info:
+        click.echo(f"   数据源类型: {source_info.source_type}")
+        click.echo(f"   商品数量: {source_info.product_count}")
+        if source_info.has_conflict:
+            click.echo(click.style(f"   ⚠️  检测到数据源冲突: {len(source_info.conflict_details)} 个问题", fg='yellow'))
+            for conflict in source_info.conflict_details[:3]:
+                click.echo(f"      - {conflict}")
+            if len(source_info.conflict_details) > 3:
+                click.echo(f"      - ... 还有 {len(source_info.conflict_details) - 3} 个问题")
+            click.echo(click.style("   建议: 运行 'python cli.py export_data' 重新导出JSON数据", fg='cyan'))
+    
+    click.echo("📈 正在生成图表...")
+    generator.generate_charts()
+    
+    reports = {}
+    
+    if format in ['markdown', 'all']:
+        click.echo("📝 生成Markdown报告...")
+        reports['markdown'] = generator.generate_markdown_report()
+    
+    if format in ['excel', 'all']:
+        click.echo("📊 生成Excel报告...")
+        reports['excel'] = generator.generate_excel_report()
+    
+    if format in ['pdf', 'all']:
+        click.echo("📄 生成PDF报告...")
+        reports['pdf'] = generator.generate_pdf_report()
+    
+    click.echo(f"\n✅ 报告生成完成!")
+    click.echo(f"   报告目录: {os.path.abspath(output)}")
+    for fmt, path in reports.items():
+        click.echo(f"   {fmt.upper()}: {path}")
+
+@cli.command()
+@click.argument('product_id', type=int)
+@click.option('--days', '-d', default=30, help='显示天数')
+@click.option('--output', '-o', type=str, default='reports/charts', help='输出目录')
+def chart(product_id, days, output):
+    """生成单个商品的价格趋势图"""
+    from price_monitor.report import PriceAnalyzer, PriceVisualizer
+    from price_monitor.storage import Database
+    
+    db = Database()
+    product = db.get_product(product_id)
+    
+    if not product:
+        click.echo(f"❌ 商品ID {product_id} 不存在")
+        return
+    
+    history = db.get_price_history(product_id)
+    if not history:
+        click.echo(f"❌ 商品 {product['name']} 暂无价格历史")
+        return
+    
+    analyzer = PriceAnalyzer()
+    analysis = analyzer.analyze_product(product, history)
+    
+    visualizer = PriceVisualizer(output_dir=output)
+    chart_path = visualizer.plot_price_trend(analysis, days=days)
+    
+    click.echo(f"✅ 价格趋势图已生成: {chart_path}")
+
+@cli.command()
+@click.option('--top', '-n', default=5, help='显示TOP N商品')
+@click.option('--output', '-o', type=str, default='reports/charts', help='输出目录')
+def compare(top, output):
+    """生成多商品价格对比图"""
+    from price_monitor.report import PriceAnalyzer, PriceVisualizer
+    
+    analyzer = PriceAnalyzer()
+    analyses = analyzer.analyze_all()
+    
+    if not analyses:
+        click.echo("暂无商品数据")
+        return
+    
+    top_products = sorted(analyses, 
+                         key=lambda x: abs(x.change_percent_recent), 
+                         reverse=True)[:top]
+    
+    visualizer = PriceVisualizer(output_dir=output)
+    chart_path = visualizer.plot_multi_product_comparison(top_products)
+    
+    click.echo(f"✅ 商品对比图已生成: {chart_path}")
+    click.echo(f"   包含商品:")
+    for a in top_products:
+        click.echo(f"   - {a.product_name[:30]}")
+
 if __name__ == '__main__':
     cli()
